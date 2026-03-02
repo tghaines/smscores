@@ -16,7 +16,7 @@ import sys
 # ══════════════════════════════════════════════
 
 CLOUD_URL = 'http://134.199.153.50'
-API_KEY = 'ab6d1435dccd0fb7a09133284ed0f256d901a0c0538c1e56d5d3c7e4726b791f'
+API_KEY = ''  # Set your API key here or use the GUI version
 
 SHOTMARKER_IP = '192.168.100.1'
 SHOTMARKER_SSID = 'ShotMarker'

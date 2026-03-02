@@ -75,6 +75,7 @@ DEFAULT_CONFIG = {
     'github_repo': 'tghaines/smscores',
     'github_branch': 'master',
     'github_file': 'win_scraper_gui.py',
+    'github_token': '',
 }
 
 
@@ -96,11 +97,18 @@ def _version_tuple(v):
         return (0,)
 
 
-def check_for_update(repo, branch, filepath):
+def check_for_update(repo, branch, filepath, token=None):
     """Check GitHub for a newer version. Returns (has_update, remote_ver, content) or (False, None, None)."""
     try:
-        url = f'https://raw.githubusercontent.com/{repo}/{branch}/{filepath}'
-        resp = requests.get(url, timeout=15)
+        headers = {}
+        if token:
+            # Use GitHub API for private repos (raw.githubusercontent doesn't accept tokens reliably)
+            url = f'https://api.github.com/repos/{repo}/contents/{filepath}?ref={branch}'
+            headers['Authorization'] = f'token {token}'
+            headers['Accept'] = 'application/vnd.github.v3.raw'
+        else:
+            url = f'https://raw.githubusercontent.com/{repo}/{branch}/{filepath}'
+        resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code != 200:
             return False, None, None
         content = resp.text
@@ -406,6 +414,29 @@ class ScraperApp:
         except Exception as e:
             self.log(f'[ERROR] Save config: {e}')
 
+    def _import_config(self):
+        path = filedialog.askopenfilename(
+            title='Import Config',
+            filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
+        )
+        if not path:
+            return
+        self._load_config_from_file(path)
+
+    def _load_config_from_file(self, path):
+        try:
+            with open(path, 'r') as f:
+                imported = json.load(f)
+            if not isinstance(imported, dict):
+                self.log(f'[ERROR] Invalid config file')
+                return
+            self.config.update(imported)
+            self.apply_config_to_gui()
+            self.save_config()
+            self.log(f'Config imported from {os.path.basename(path)}')
+        except Exception as e:
+            self.log(f'[ERROR] Import config: {e}')
+
     def read_gui_to_config(self):
         self.config['upload_ssid'] = self.upload_ssid_var.get().strip()
         self.config['upload_password'] = self.upload_pass_var.get()
@@ -416,6 +447,7 @@ class ScraperApp:
         self.config['api_key'] = self.api_key_var.get().strip()
         self.config['wifi_interface'] = self.iface_var.get().strip()
         self.config['shotmarker_ip'] = self.sm_ip_var.get().strip()
+        self.config['github_token'] = self.gh_token_var.get().strip()
         try:
             self.config['auto_interval'] = int(self.interval_var.get())
         except ValueError:
@@ -516,6 +548,7 @@ class ScraperApp:
         self.api_key_var.set(self.config.get('api_key', ''))
         self.iface_var.set(self.config.get('wifi_interface', 'Wi-Fi'))
         self.sm_ip_var.set(self.config.get('shotmarker_ip', '192.168.100.1'))
+        self.gh_token_var.set(self.config.get('github_token', ''))
 
     # ── Build GUI ──
 
@@ -615,6 +648,8 @@ class ScraperApp:
         self.test_upload_btn = ttk.Button(btn_frame2, text='Test Upload', command=self.test_upload)
         self.test_upload_btn.pack(side='left', padx=5)
 
+        ttk.Button(btn_frame2, text='Import Config', command=self._import_config).pack(side='left', padx=5)
+
         self.update_btn = ttk.Button(btn_frame2, text='Update', command=self._check_update_clicked)
         self.update_btn.pack(side='right')
 
@@ -628,15 +663,17 @@ class ScraperApp:
         self.cloud_url_var = tk.StringVar()
         self.api_key_var = tk.StringVar()
         self.sm_ip_var = tk.StringVar()
+        self.gh_token_var = tk.StringVar()
 
         for i, (label, var) in enumerate([
             ('Cloud URL:', self.cloud_url_var),
             ('API Key:', self.api_key_var),
             ('ShotMarker IP:', self.sm_ip_var),
+            ('GitHub Token:', self.gh_token_var),
         ]):
             ttk.Label(self.adv_frame, text=label).grid(row=i, column=0, sticky='e', padx=(0, 5), pady=2)
             entry = ttk.Entry(self.adv_frame, textvariable=var, width=45)
-            if var is self.api_key_var:
+            if var in (self.api_key_var, self.gh_token_var):
                 entry.configure(show='*')
             entry.grid(row=i, column=1, sticky='ew', pady=2)
         self.adv_frame.columnconfigure(1, weight=1)
@@ -659,6 +696,14 @@ class ScraperApp:
         self.countdown_label = tk.Label(ind_frame, text='', fg='#555555',
                                          font=('Consolas', 9), padx=6, pady=2)
         self.countdown_label.pack(side='right')
+
+        # --- Last scrape summary ---
+        self.scrape_summary_var = tk.StringVar(value='No scrapes yet')
+        self.scrape_summary_label = tk.Label(
+            self.root, textvariable=self.scrape_summary_var,
+            font=('Consolas', 9), fg='#555555', anchor='w',
+            padx=6, pady=2)
+        self.scrape_summary_label.pack(fill='x', padx=10)
 
         # --- Log output ---
         log_frame = ttk.LabelFrame(self.root, text='Log', padding=4)
@@ -710,6 +755,21 @@ class ScraperApp:
         threading.Thread(target=_scan, daemon=True).start()
 
     # ── Status indicators ──
+
+    def _update_scrape_summary(self, num_scores, num_csv_lines, push_ok):
+        ts = datetime.now().strftime('%H:%M:%S')
+        parts = [f'Last scrape: {ts}']
+        if num_scores:
+            parts.append(f'{num_scores} scores')
+        if num_csv_lines:
+            parts.append(f'{num_csv_lines} CSV lines')
+        parts.append('Pushed OK' if push_ok else 'PUSH FAILED')
+        summary = '  |  '.join(parts)
+        fg = '#22aa22' if push_ok else '#cc2222'
+        self.root.after(0, lambda: (
+            self.scrape_summary_var.set(summary),
+            self.scrape_summary_label.configure(fg=fg),
+        ))
 
     def _update_indicator(self, name, status):
         """Update a status indicator. status: 'ok', 'fail', or 'unknown'"""
@@ -1170,6 +1230,14 @@ class ScraperApp:
 
             self._update_indicator('cloud', 'ok' if cloud_ok else 'fail')
 
+            # Update scrape summary panel
+            csv_lines = len(all_shotlog.strip().split('\n')) if all_shotlog.strip() else 0
+            self._update_scrape_summary(
+                len(all_scores) if has_scores else 0,
+                csv_lines,
+                cloud_ok
+            )
+
             self.log('\u2550\u2550\u2550 Scrape complete \u2550\u2550\u2550')
             threading.Thread(target=play_success_sound if cloud_ok else play_fail_sound,
                              daemon=True).start()
@@ -1239,6 +1307,7 @@ class ScraperApp:
         repo = cfg.get('github_repo', 'tghaines/smscores')
         branch = cfg.get('github_branch', 'master')
         filepath = cfg.get('github_file', 'win_scraper_gui.py')
+        token = cfg.get('github_token', '') or None
 
         # Connect to upload WiFi if not already on it
         current = get_current_ssid()
@@ -1251,7 +1320,7 @@ class ScraperApp:
                 return
             time.sleep(2)
 
-        has_update, remote_ver, content = check_for_update(repo, branch, filepath)
+        has_update, remote_ver, content = check_for_update(repo, branch, filepath, token=token)
         if has_update:
             self._pending_update = (remote_ver, content)
             if silent:
@@ -1346,7 +1415,12 @@ class ScraperApp:
 
 def main():
     root = tk.Tk()
-    ScraperApp(root)
+    app = ScraperApp(root)
+
+    # Support dragging a config file onto the script/exe
+    if len(sys.argv) > 1 and sys.argv[1].endswith('.json'):
+        root.after(1000, lambda: app._load_config_from_file(sys.argv[1]))
+
     root.mainloop()
 
 
