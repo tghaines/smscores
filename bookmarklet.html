@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head><title>SM Squadding Bookmarklet</title></head>
+<body style="font-family:sans-serif; max-width:600px; margin:40px auto; padding:20px;">
+<h2>ShotMarker Squadding Bookmarklet</h2>
+<p style="font-size:1.2em; margin:30px 0;">
+  Drag this link to your bookmarks bar:
+</p>
+<p style="text-align:center; margin:30px;">
+  <a href="javascript:(function(){if(typeof data==='undefined'||!data.users||!data.squadding){alert('ShotMarker data not found!');return;}var c=[];Object.entries(data.squadding).forEach(function([key,squad]){var parts=key.split(',');if(parts.length!==2)return;var user=data.users[parts[1]]||{};if(!user.name||user.name==='Unknown')return;var match=data.matches[parts[0]]||{};var classInfo=data.classes?data.classes[user.class]||{}:{};if(typeof squad!=='object'||squad===null)squad={};var frameInfo=data.frames?data.frames[squad.frame_id]||{}:{};c.push({name:user.name,class:classInfo.name||user.class||'',relay:String(squad.relay||''),target:frameInfo.name||String(squad.frame_id||''),match:match.name||'',position:String(squad.position||'')});});fetch('http://localhost:8765/squadding',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({competitors:c})}).then(function(r){return r.json()}).then(function(d){var m={};c.forEach(function(e){m[e.match]=(m[e.match]||0)+1});alert('Sent '+c.length+' competitors to scraper!\n\n'+Object.entries(m).map(function([k,v]){return k+': '+v}).join('\n'))}).catch(function(e){alert('Could not reach scraper!\nIs it running?\n\n'+e.message)})})();"
+     style="font-size:1.5em; padding:15px 30px; background:#2d5016; color:white; text-decoration:none; border-radius:8px; display:inline-block;">
+    SM Squadding
+  </a>
+</p>
+<h3>How to install:</h3>
+<ol style="font-size:1.1em; line-height:2;">
+  <li>Make sure your bookmarks bar is visible (Ctrl+Shift+B)</li>
+  <li>Drag the green button above to your bookmarks bar</li>
+  <li>Done</li>
+</ol>
+<h3>How to use:</h3>
+<ol style="font-size:1.1em; line-height:2;">
+  <li>Make sure the scraper app is running</li>
+  <li>Open the ShotMarker page (192.168.100.1) in Chrome</li>
+  <li>Click "SM Squadding" in your bookmarks bar</li>
+  <li>Click "Push Squadding" in the scraper app</li>
+</ol>
+</body>
+</html>
