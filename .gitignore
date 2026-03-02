@@ -20,3 +20,27 @@ desktop.ini
 # Backups
 *.bak
 backups/
+nm-backup.tar.gz
+scraper_config_backup.json
+
+# Data files — keep local only
+*.csv
+*.xlsx
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.docx
+*.tar.gz
+
+# Old/one-off scripts
+add_edit_score.py
+add_score_api.py
+fix_sponsors.py
+fix_sponsors.sh
+patch_sponsors.py
+scraper_web_v2.py
+list
+
+# Archive folder
+Archive/
