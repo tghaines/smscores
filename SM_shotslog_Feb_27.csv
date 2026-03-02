@@ -1,0 +1,28 @@
+ShotMarker Archived Data (generated Feb 27 2026)
+Exported 2 strings from Feb 26 to Feb 27 of 2984 total in archive
+
+Feb 27 2026,TGH Test,#246 (E6),1735 x 1735,ICFRA-2008 F-Class Long Range at 800m,
+,time,tags,id,score,temp C,x mm,y mm,v fps,yaw deg, pitch deg,quality,xy_err
+,11:50.24 am,sighter/simulated,S1,X,17,21,14,2385,0.3,1.1,0.2,0,
+,11:50.27 am,sighter/simulated,S2,6,18,-42,64,2491,0.4,1.2,0.2,0,
+,11:50.27 am,simulated,1,6,17,-53,-44,2600,0.8,1.2,0.2,0,
+,11:50.32 am,simulated,2,6,19,77,-64,2362,0.2,1.2,0.2,0,
+,11:50.34 am,simulated,3,5,17,146,29,2595,-0.7,1.1,0.2,0,
+,11:50.36 am,simulated,4,5,20,-73,193,2606,0.3,1.2,0.2,0,
+,11:50.37 am,simulated,5,5,17,-134,-69,2466,1.1,1.1,0.2,0,
+,11:50.37 am,simulated,6,5,17,128,-105,2484,0.2,1.1,0.2,0,
+,11:50.38 am,simulated,7,5,20,157,88,2316,-0.6,1.1,0.2,0,
+,11:50.39 am,simulated,8,6,19,1,-118,2589,-0.3,1.1,0.2,0,
+,11:50.40 am,simulated,9,5,18,66,143,2517,1,1.2,0.6,0,
+,11:50.41 am,simulated,10,5,17,-165,45,2495,-0.2,1.2,0.2,0,
+
+Feb 26 2026,Trent Test,#246 (E6),1735 x 1735,ICFRA-2008 F-Class Long Range at 800m,
+,time,tags,id,score,temp C,x mm,y mm,v fps,yaw deg, pitch deg,quality,xy_err
+,1:57.07 pm,sighter/simulated,S1,X,16,4,-2,2529,0.3,1.1,0.2,0,
+,1:57.09 pm,sighter/simulated,S2,6,15,66,52,2444,0.3,1.1,0.2,0,
+,1:57.10 pm,simulated,1,5,16,-94,94,2624,0.8,1.1,0.2,0,
+,1:57.11 pm,simulated,2,5,17,23,166,2572,-0.8,1.1,0.2,0,
+,1:57.12 pm,simulated,3,6,16,-131,-2,2541,0.1,1.1,0.2,0,
+,1:57.13 pm,simulated,4,6,18,18,-83,2599,1.1,1.2,0.2,0,
+,1:57.14 pm,simulated,5,5,17,137,-43,2600,0.7,1.1,0.2,0,
+,1:57.15 pm,simulated,6,X,17,-60,-5,2487,0,1.1,0.2,0,

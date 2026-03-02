@@ -1,0 +1,34 @@
+{
+  "active_range": "ANZAC",
+  "active_competition": "CoastalCup",
+  "cloud_url": "http://134.199.153.50",
+  "api_key": "ab6d1435dccd0fb7a09133284ed0f256d901a0c0538c1e56d5d3c7e4726b791f",
+  "sm_channels": [
+    {
+      "name": "SM1",
+      "ssid": "ShotMarker",
+      "enabled": true
+    },
+    {
+      "name": "SM2",
+      "ssid": "ShotMarker2",
+      "enabled": true
+    },
+    {
+      "name": "SM3",
+      "ssid": "ShotMarker3",
+      "enabled": false
+    },
+    {
+      "name": "SM4",
+      "ssid": "ShotMarker4",
+      "enabled": false
+    }
+  ],
+  "uplink_ssid": "trinity",
+  "uplink_password": "ddfa235a0c",
+  "scrape_interval": 15,
+  "schedule_enabled": false,
+  "schedule_off_start": "08:00",
+  "schedule_off_end": "17:00"
+}
