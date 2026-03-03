@@ -46,3 +46,9 @@ list
 
 # Archive folder
 Archive/
+
+# PyInstaller build output
+dist/
+build/
+*.spec
+*.exe

@@ -34,7 +34,7 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, 'scraper_config.json')
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 
 SM_CHANNELS = ['ShotMarker', 'ShotMarker2', 'ShotMarker3', 'ShotMarker4']
 
@@ -68,7 +68,8 @@ DEFAULT_CONFIG = {
     'shotmarker_ip': '192.168.100.1',
     'upload_ssid': '',
     'upload_password': '',
-    'wifi_interface': 'Wi-Fi',
+    'sm_interface': 'Wi-Fi',
+    'upload_interface': 'Wi-Fi',
     'competition': '',
     'mode': 'club',
     'auto_interval': 120,
@@ -76,6 +77,8 @@ DEFAULT_CONFIG = {
     'github_branch': 'master',
     'github_file': 'win_scraper_gui.py',
     'github_token': '',
+    'range_id': '',
+    'range_name': '',
 }
 
 
@@ -127,38 +130,66 @@ def check_for_update(repo, branch, filepath, token=None):
 # ══════════════════════════════════════════════
 
 def get_current_ssid(interface=None):
-    """Get currently connected WiFi SSID via netsh"""
+    """Get currently connected WiFi SSID via netsh.
+
+    If interface is specified, returns the SSID for that specific adapter.
+    Otherwise returns the first connected SSID found.
+    """
     try:
-        cmd = ['netsh', 'wlan', 'show', 'interfaces']
-        if interface:
-            cmd.extend([f'interface={interface}'])
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(
+            ['netsh', 'wlan', 'show', 'interfaces'],
+            capture_output=True, text=True, timeout=10
+        )
+        current_name = None
+        current_ssid = None
         for line in result.stdout.splitlines():
             line = line.strip()
-            if line.startswith('SSID') and not line.startswith('AP BSSID'):
-                return line.split(':', 1)[1].strip()
+            low = line.lower()
+            if low.startswith('name') and ':' in line:
+                current_name = line.split(':', 1)[1].strip()
+                current_ssid = None
+            elif line.startswith('SSID') and not line.startswith('AP BSSID') and ':' in line:
+                current_ssid = line.split(':', 1)[1].strip()
+                if not interface or current_name == interface:
+                    return current_ssid
     except:
         pass
     return None
 
 
 def get_wifi_interfaces():
-    """List available WiFi interface names from netsh"""
+    """List available WiFi interfaces with hardware descriptions.
+
+    Returns list of dicts: [{'name': 'Wi-Fi', 'desc': 'Realtek 8812BU ...', 'label': 'Wi-Fi \u2014 Realtek 8812BU ...'}]
+    """
     interfaces = []
     try:
         result = subprocess.run(
             ['netsh', 'wlan', 'show', 'interfaces'],
             capture_output=True, text=True, timeout=10
         )
+        current = {}
         for line in result.stdout.splitlines():
             line = line.strip()
-            if line.lower().startswith('name') and ':' in line:
-                name = line.split(':', 1)[1].strip()
-                if name:
-                    interfaces.append(name)
+            low = line.lower()
+            if low.startswith('name') and ':' in line:
+                if current.get('name'):
+                    interfaces.append(current)
+                current = {'name': line.split(':', 1)[1].strip(), 'desc': ''}
+            elif low.startswith('description') and ':' in line:
+                current['desc'] = line.split(':', 1)[1].strip()
+        if current.get('name'):
+            interfaces.append(current)
+        for iface in interfaces:
+            desc = iface['desc']
+            # Shorten common verbose prefixes
+            for prefix in ('Intel(R) ', 'Realtek ', 'MediaTek ', 'Qualcomm ', 'Broadcom '):
+                if desc.startswith(prefix):
+                    break
+            iface['label'] = f"{iface['name']} \u2014 {desc}" if desc else iface['name']
     except:
         pass
-    return interfaces or ['Wi-Fi']
+    return interfaces or [{'name': 'Wi-Fi', 'desc': '', 'label': 'Wi-Fi'}]
 
 
 def scan_wifi_networks(interface='Wi-Fi'):
@@ -242,7 +273,7 @@ def ensure_wifi_profile(ssid, password=None, interface='Wi-Fi'):
 
 def wifi_connect(ssid, interface, log_fn, password=None):
     """Connect to a WiFi network. Creates profile if needed."""
-    current = get_current_ssid()
+    current = get_current_ssid(interface)
     if current == ssid:
         log_fn(f'Already connected to {ssid}')
         return True
@@ -254,8 +285,8 @@ def wifi_connect(ssid, interface, log_fn, password=None):
             capture_output=True, text=True, timeout=15
         )
         if result.returncode != 0:
-            output = result.stderr.strip() or result.stdout.strip()
-            if '1168' in output or 'not found' in output.lower() or 'Element' in output:
+            output = (result.stderr.strip() or result.stdout.strip()).lower()
+            if '1168' in output or 'not found' in output or 'element' in output or 'no profile' in output:
                 log_fn(f'Creating WiFi profile for {ssid}...')
                 if ensure_wifi_profile(ssid, password, interface):
                     result = subprocess.run(
@@ -272,7 +303,7 @@ def wifi_connect(ssid, interface, log_fn, password=None):
 
         for i in range(15):
             time.sleep(1)
-            if get_current_ssid() == ssid:
+            if get_current_ssid(interface) == ssid:
                 log_fn(f'Connected to {ssid}')
                 return True
             if i % 3 == 2:
@@ -350,18 +381,23 @@ class ScraperApp:
         self.auto_timer = None
         self.last_hash = None
         self.competitions = []
+        self.all_destinations = {'ranges': [], 'competitions': []}
+        self.validated_range_id = None
+        self.validated_range_name = None
         self.advanced_visible = False
         self.received_squadding = None
         self.push_queue = []
         self.next_scrape_at = None
         self.countdown_timer = None
         self._pending_update = None
+        self._wifi_interfaces = []
 
         self.config = dict(DEFAULT_CONFIG)
         self.load_config()
         self._load_queue()
         self.build_gui()
         self.apply_config_to_gui()
+        self._on_mode_changed()
 
         self._start_local_server()
         self._update_queue_indicator()
@@ -369,6 +405,8 @@ class ScraperApp:
             self.root.after(600, lambda: self.log(
                 f'{len(self.push_queue)} queued push(es) from previous session'))
         self.root.after(500, self._show_current_wifi)
+        self.root.after(2000, self.fetch_destinations)
+        self.root.after(4000, self._auto_validate_key)
         self.root.after(5000, self._auto_check_update)
 
     # ── Local server for bookmarklet ──
@@ -437,6 +475,12 @@ class ScraperApp:
         except Exception as e:
             self.log(f'[ERROR] Import config: {e}')
 
+    @property
+    def dual_adapter(self):
+        sm = self.config.get('sm_interface', '')
+        up = self.config.get('upload_interface', '')
+        return bool(sm and up and sm != up)
+
     def read_gui_to_config(self):
         self.config['upload_ssid'] = self.upload_ssid_var.get().strip()
         self.config['upload_password'] = self.upload_pass_var.get()
@@ -445,9 +489,17 @@ class ScraperApp:
         self.config['competition'] = self.comp_var.get().strip()
         self.config['cloud_url'] = self.cloud_url_var.get().strip().rstrip('/')
         self.config['api_key'] = self.api_key_var.get().strip()
-        self.config['wifi_interface'] = self.iface_var.get().strip()
+        sm_sel = self.sm_iface_var.get().strip()
+        self.config['sm_interface'] = sm_sel.split(' \u2014 ')[0].strip() if ' \u2014 ' in sm_sel else sm_sel
+        up_sel = self.iface_var.get().strip()
+        self.config['upload_interface'] = up_sel.split(' \u2014 ')[0].strip() if ' \u2014 ' in up_sel else up_sel
         self.config['shotmarker_ip'] = self.sm_ip_var.get().strip()
         self.config['github_token'] = self.gh_token_var.get().strip()
+        range_sel = self.range_var.get()
+        if range_sel and ' \u2014 ' in range_sel:
+            self.config['range_id'] = range_sel.split(' \u2014 ')[0].strip()
+        if self.validated_range_name:
+            self.config['range_name'] = self.validated_range_name
         try:
             self.config['auto_interval'] = int(self.interval_var.get())
         except ValueError:
@@ -546,25 +598,40 @@ class ScraperApp:
         self.interval_var.set(str(self.config.get('auto_interval', 120)))
         self.cloud_url_var.set(self.config.get('cloud_url', ''))
         self.api_key_var.set(self.config.get('api_key', ''))
-        self.iface_var.set(self.config.get('wifi_interface', 'Wi-Fi'))
+        self.sm_iface_var.set(self.config.get('sm_interface', 'Wi-Fi'))
+        self.iface_var.set(self.config.get('upload_interface', self.config.get('wifi_interface', 'Wi-Fi')))
+        cached_range = self.config.get('range_name', '')
+        if cached_range:
+            self._set_range_label(cached_range, 'grey')
         self.sm_ip_var.set(self.config.get('shotmarker_ip', '192.168.100.1'))
         self.gh_token_var.set(self.config.get('github_token', ''))
 
     # ── Build GUI ──
 
     def build_gui(self):
-        # --- ShotMarker Channels (checkboxes) ---
-        sm_frame = ttk.LabelFrame(self.root, text='ShotMarker Channels', padding=8)
+        # --- ShotMarker ---
+        sm_frame = ttk.LabelFrame(self.root, text='ShotMarker', padding=8)
         sm_frame.pack(fill='x', padx=10, pady=(10, 5))
 
+        ttk.Label(sm_frame, text='Adapter:').grid(row=0, column=0, sticky='e', padx=(0, 5), pady=2)
+        self.sm_iface_var = tk.StringVar()
+        sm_iface_row = ttk.Frame(sm_frame)
+        sm_iface_row.grid(row=0, column=1, sticky='ew', pady=2)
+        self.sm_iface_combo = ttk.Combobox(sm_iface_row, textvariable=self.sm_iface_var, width=30)
+        self.sm_iface_combo.pack(side='left', fill='x', expand=True)
+        ttk.Button(sm_iface_row, text='\u21bb', width=3,
+                    command=self._refresh_interfaces).pack(side='left', padx=(5, 0))
+
+        ttk.Label(sm_frame, text='Channels:').grid(row=1, column=0, sticky='ne', padx=(0, 5), pady=2)
         self.sm_vars = {}
         cb_row = ttk.Frame(sm_frame)
-        cb_row.pack(fill='x')
+        cb_row.grid(row=1, column=1, sticky='w', pady=2)
         for i, ch in enumerate(SM_CHANNELS):
             var = tk.BooleanVar(value=(ch == 'ShotMarker'))
             self.sm_vars[ch] = var
             ttk.Checkbutton(cb_row, text=ch, variable=var).grid(
                 row=i // 2, column=i % 2, sticky='w', padx=(0, 20), pady=1)
+        sm_frame.columnconfigure(1, weight=1)
 
         # --- Upload WiFi ---
         upload = ttk.LabelFrame(self.root, text='Upload WiFi (internet)', padding=8)
@@ -597,28 +664,36 @@ class ScraperApp:
                    font=('', 8)).grid(row=3, column=0, columnspan=2, sticky='w')
         upload.columnconfigure(1, weight=1)
 
-        # --- Competition settings ---
-        comp = ttk.LabelFrame(self.root, text='Competition', padding=8)
+        # --- Range & Competition settings ---
+        comp = ttk.LabelFrame(self.root, text='Range & Competition', padding=8)
         comp.pack(fill='x', padx=10, pady=5)
 
+        ttk.Label(comp, text='Range:').grid(row=0, column=0, sticky='e', padx=(0, 5), pady=2)
+        self.range_var = tk.StringVar()
+        self.range_combo = ttk.Combobox(comp, textvariable=self.range_var, width=30, state='readonly')
+        self.range_combo.grid(row=0, column=1, sticky='ew', pady=2)
+        self.range_combo.bind('<<ComboboxSelected>>', self._on_range_selected)
+        ttk.Button(comp, text='Fetch', command=self.fetch_destinations,
+                    width=8).grid(row=0, column=2, padx=(5, 0), pady=2)
+
         mode_row = ttk.Frame(comp)
-        mode_row.grid(row=0, column=0, columnspan=3, sticky='w', pady=(0, 5))
+        mode_row.grid(row=1, column=0, columnspan=3, sticky='w', pady=(5, 2))
         self.mode_var = tk.StringVar(value='club')
         ttk.Radiobutton(mode_row, text='Competition', variable=self.mode_var,
                          value='competition').pack(side='left')
         ttk.Radiobutton(mode_row, text='Club day only', variable=self.mode_var,
                          value='club').pack(side='left', padx=(15, 0))
+        self.mode_var.trace_add('write', self._on_mode_changed)
 
-        ttk.Label(comp, text='Competition:').grid(row=1, column=0, sticky='e', padx=(0, 5))
+        self.comp_label = ttk.Label(comp, text='Competition:')
+        self.comp_label.grid(row=2, column=0, sticky='e', padx=(0, 5))
         self.comp_var = tk.StringVar()
-        self.comp_combo = ttk.Combobox(comp, textvariable=self.comp_var, width=30)
-        self.comp_combo.grid(row=1, column=1, sticky='ew')
-        ttk.Button(comp, text='Fetch', command=self.fetch_destinations,
-                    width=8).grid(row=1, column=2, padx=(5, 0))
+        self.comp_combo = ttk.Combobox(comp, textvariable=self.comp_var, width=30, state='readonly')
+        self.comp_combo.grid(row=2, column=1, sticky='ew')
         comp.columnconfigure(1, weight=1)
 
         auto_row = ttk.Frame(comp)
-        auto_row.grid(row=2, column=0, columnspan=3, sticky='w', pady=(5, 0))
+        auto_row.grid(row=3, column=0, columnspan=3, sticky='w', pady=(5, 0))
         ttk.Label(auto_row, text='Auto interval (sec):').pack(side='left')
         self.interval_var = tk.StringVar(value='120')
         ttk.Entry(auto_row, textvariable=self.interval_var, width=6).pack(side='left', padx=5)
@@ -665,17 +740,33 @@ class ScraperApp:
         self.sm_ip_var = tk.StringVar()
         self.gh_token_var = tk.StringVar()
 
-        for i, (label, var) in enumerate([
+        row = 0
+        for label, var in [
             ('Cloud URL:', self.cloud_url_var),
-            ('API Key:', self.api_key_var),
             ('ShotMarker IP:', self.sm_ip_var),
             ('GitHub Token:', self.gh_token_var),
-        ]):
-            ttk.Label(self.adv_frame, text=label).grid(row=i, column=0, sticky='e', padx=(0, 5), pady=2)
+        ]:
+            ttk.Label(self.adv_frame, text=label).grid(row=row, column=0, sticky='e', padx=(0, 5), pady=2)
             entry = ttk.Entry(self.adv_frame, textvariable=var, width=45)
-            if var in (self.api_key_var, self.gh_token_var):
+            if var is self.gh_token_var:
                 entry.configure(show='*')
-            entry.grid(row=i, column=1, sticky='ew', pady=2)
+            entry.grid(row=row, column=1, columnspan=2, sticky='ew', pady=2)
+            row += 1
+
+        ttk.Label(self.adv_frame, text='API Key:').grid(row=row, column=0, sticky='e', padx=(0, 5), pady=2)
+        key_row = ttk.Frame(self.adv_frame)
+        key_row.grid(row=row, column=1, columnspan=2, sticky='ew', pady=2)
+        ttk.Entry(key_row, textvariable=self.api_key_var, width=35, show='*').pack(
+            side='left', fill='x', expand=True)
+        self.validate_btn = ttk.Button(key_row, text='Validate', width=8,
+                                        command=self._validate_key_clicked)
+        self.validate_btn.pack(side='left', padx=(5, 0))
+        row += 1
+
+        self.range_label = tk.Label(self.adv_frame, text='Not validated', fg='grey',
+                                     font=('Consolas', 9), anchor='w')
+        self.range_label.grid(row=row, column=1, columnspan=2, sticky='w', pady=2)
+
         self.adv_frame.columnconfigure(1, weight=1)
 
         # --- Status indicators ---
@@ -735,11 +826,27 @@ class ScraperApp:
     def _refresh_interfaces(self):
         def _scan():
             ifaces = get_wifi_interfaces()
-            current = self.iface_var.get()
-            self.root.after(0, lambda: self.iface_combo.configure(values=ifaces))
-            if current not in ifaces and ifaces:
-                self.root.after(0, lambda: self.iface_var.set(ifaces[0]))
-            self.log(f'WiFi adapters: {", ".join(ifaces)}')
+            self._wifi_interfaces = ifaces
+            labels = [i['label'] for i in ifaces]
+            names = [i['name'] for i in ifaces]
+            self.root.after(0, lambda: self.sm_iface_combo.configure(values=labels))
+            self.root.after(0, lambda: self.iface_combo.configure(values=labels))
+            sm_current = self.sm_iface_var.get()
+            up_current = self.iface_var.get()
+            # Match by name portion (before ' — ') for saved configs
+            sm_name = sm_current.split(' \u2014 ')[0].strip() if ' \u2014 ' in sm_current else sm_current
+            up_name = up_current.split(' \u2014 ')[0].strip() if ' \u2014 ' in up_current else up_current
+            sm_label = next((i['label'] for i in ifaces if i['name'] == sm_name), '')
+            up_label = next((i['label'] for i in ifaces if i['name'] == up_name), '')
+            if not sm_label and labels:
+                sm_label = labels[0]
+            if not up_label and labels:
+                up_label = labels[0]
+            if sm_label != sm_current:
+                self.root.after(0, lambda: self.sm_iface_var.set(sm_label))
+            if up_label != up_current:
+                self.root.after(0, lambda: self.iface_var.set(up_label))
+            self.log(f'WiFi adapters: {", ".join(labels)}')
         threading.Thread(target=_scan, daemon=True).start()
 
     def _scan_networks(self):
@@ -842,38 +949,143 @@ class ScraperApp:
     def _show_current_wifi(self):
         def _get():
             ifaces = get_wifi_interfaces()
-            self.root.after(0, lambda: self.iface_combo.configure(values=ifaces))
-            current_iface = self.iface_var.get()
-            if current_iface not in ifaces and ifaces:
-                self.root.after(0, lambda: self.iface_var.set(ifaces[0]))
+            self._wifi_interfaces = ifaces
+            labels = [i['label'] for i in ifaces]
+            names = [i['name'] for i in ifaces]
+            self.root.after(0, lambda: self.sm_iface_combo.configure(values=labels))
+            self.root.after(0, lambda: self.iface_combo.configure(values=labels))
+            sm_current = self.sm_iface_var.get()
+            up_current = self.iface_var.get()
+            # Match by name portion for saved configs
+            sm_name = sm_current.split(' \u2014 ')[0].strip() if ' \u2014 ' in sm_current else sm_current
+            up_name = up_current.split(' \u2014 ')[0].strip() if ' \u2014 ' in up_current else up_current
+            sm_label = next((i['label'] for i in ifaces if i['name'] == sm_name), '')
+            up_label = next((i['label'] for i in ifaces if i['name'] == up_name), '')
+            if not sm_label and labels:
+                sm_label = labels[0]
+            if not up_label and labels:
+                up_label = labels[0]
+            if sm_label != sm_current:
+                self.root.after(0, lambda: self.sm_iface_var.set(sm_label))
+            if up_label != up_current:
+                self.root.after(0, lambda: self.iface_var.set(up_label))
             ssid = get_current_ssid()
             self.log(f'Current WiFi: {ssid or "(not connected)"}')
-            self.log(f'WiFi adapters: {", ".join(ifaces)}')
+            self.log(f'WiFi adapters: {", ".join(labels)}')
             # Auto-scan nearby networks
-            iface = current_iface if current_iface in ifaces else (ifaces[0] if ifaces else 'Wi-Fi')
-            networks = scan_wifi_networks(iface)
+            up_iface = up_name if up_name in names else (names[0] if names else 'Wi-Fi')
+            networks = scan_wifi_networks(up_iface)
             if networks:
                 self.root.after(0, lambda: self.ssid_combo.configure(values=networks))
                 self.log(f'Nearby networks: {", ".join(networks)}')
         threading.Thread(target=_get, daemon=True).start()
 
-    # ── Fetch competitions from server ──
+    # ── Range & mode selection ──
+
+    def _on_range_selected(self, event=None):
+        """Filter competitions for the selected range"""
+        selected = self.range_var.get()
+        range_id = selected.split(' \u2014 ')[0].strip() if ' \u2014 ' in selected else selected.strip()
+        all_comps = self.all_destinations.get('competitions', [])
+        filtered = [c for c in all_comps if c.get('range_id') == range_id]
+        self.competitions = filtered
+        values = [f"{c['route']} \u2014 {c['name']}" for c in filtered]
+        self.comp_combo.configure(values=values)
+        if values:
+            self.comp_var.set(values[0])
+        else:
+            self.comp_var.set('')
+        self.log(f'Range: {selected} — {len(filtered)} competition(s)')
+
+    def _on_mode_changed(self, *args):
+        """Show/hide competition row based on mode"""
+        if self.mode_var.get() == 'club':
+            self.comp_label.grid_remove()
+            self.comp_combo.grid_remove()
+            self.comp_var.set('-- CLUB DAY --')
+        else:
+            self.comp_label.grid()
+            self.comp_combo.grid()
+            if self.comp_var.get() == '-- CLUB DAY --':
+                self.comp_var.set('')
+
+    # ── Validate API key ──
+
+    def _validate_key_clicked(self):
+        self.read_gui_to_config()
+        api_key = self.config.get('api_key', '').strip()
+        if not api_key:
+            self.log('[ERROR] No API key entered')
+            self.root.after(0, lambda: self._set_range_label('No key entered', 'red'))
+            return
+        threading.Thread(target=self._do_validate_key, args=(api_key, True), daemon=True).start()
+
+    def _do_validate_key(self, api_key, show_log=True):
+        url = self.config.get('cloud_url', '').strip().rstrip('/')
+        if not url:
+            if show_log:
+                self.log('[ERROR] Cloud URL not set')
+            return False
+        try:
+            resp = requests.get(
+                f'{url}/api/validate-key',
+                headers={'X-API-Key': api_key},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                self.validated_range_id = data.get('range_id')
+                self.validated_range_name = data.get('range_name')
+                name = self.validated_range_name
+                self.root.after(0, lambda: self._set_range_label(name, '#2ecc71'))
+                if show_log:
+                    self.log(f'Key valid \u2014 range: {self.validated_range_name}')
+                return True
+            else:
+                self.validated_range_id = None
+                self.validated_range_name = None
+                self.root.after(0, lambda: self._set_range_label('Invalid API key', 'red'))
+                if show_log:
+                    self.log('[ERROR] Invalid API key')
+                return False
+        except Exception as e:
+            if show_log:
+                self.log(f'[ERROR] Validate key: {e}')
+            return False
+
+    def _auto_validate_key(self):
+        api_key = self.config.get('api_key', '').strip()
+        if api_key:
+            threading.Thread(target=self._do_validate_key, args=(api_key, False), daemon=True).start()
+
+    def _set_range_label(self, text, color):
+        self.range_label.configure(text=text, fg=color)
+
+    # ── Fetch destinations from server ──
 
     def fetch_destinations(self):
         self.read_gui_to_config()
 
         def _fetch():
             url = self.config['cloud_url']
-            self.log(f'Fetching competitions from {url}...')
+            self.log(f'Fetching ranges & competitions from {url}...')
             try:
                 resp = requests.get(f'{url}/api/destinations', timeout=10)
                 if resp.status_code == 200:
                     data = resp.json()
-                    comps = data.get('competitions', [])
-                    self.competitions = comps
-                    values = [f"{c['route']} \u2014 {c['name']}" for c in comps]
-                    self.root.after(0, lambda: self.comp_combo.configure(values=values))
-                    self.log(f'Found {len(comps)} competition(s)')
+                    self.all_destinations = data
+                    ranges = data.get('ranges', [])
+                    range_values = [f"{r['id']} \u2014 {r['name']}" for r in ranges]
+                    self.root.after(0, lambda: self.range_combo.configure(values=range_values))
+                    self.log(f'Found {len(ranges)} range(s), {len(data.get("competitions", []))} competition(s)')
+                    # Auto-select saved range if it matches
+                    saved_id = self.config.get('range_id', '')
+                    if saved_id:
+                        for v in range_values:
+                            if v.startswith(saved_id + ' '):
+                                self.root.after(0, lambda val=v: self.range_var.set(val))
+                                self.root.after(50, self._on_range_selected)
+                                break
                 else:
                     self.log(f'[ERROR] HTTP {resp.status_code}')
             except Exception as e:
@@ -881,29 +1093,179 @@ class ScraperApp:
 
         threading.Thread(target=_fetch, daemon=True).start()
 
-    # ── Push Squadding ──
+    # ── Fetch & Push Squadding ──
+
+    def _fetch_sm_data_ws(self, sm_ip):
+        """Fetch full data from ShotMarker via WebSocket"""
+        import socket as sock
+        import struct
+        import base64
+
+        host = sm_ip
+        port = 80
+        # WebSocket handshake key
+        ws_key = base64.b64encode(os.urandom(16)).decode()
+
+        s = sock.create_connection((host, port), timeout=10)
+        try:
+            # Send HTTP upgrade request
+            handshake = (
+                f'GET / HTTP/1.1\r\n'
+                f'Host: {host}\r\n'
+                f'Upgrade: websocket\r\n'
+                f'Connection: Upgrade\r\n'
+                f'Sec-WebSocket-Key: {ws_key}\r\n'
+                f'Sec-WebSocket-Version: 13\r\n'
+                f'\r\n'
+            )
+            s.sendall(handshake.encode())
+
+            # Read HTTP response (101 Switching Protocols)
+            resp = b''
+            while b'\r\n\r\n' not in resp:
+                resp += s.recv(4096)
+            if b'101' not in resp.split(b'\r\n')[0]:
+                return None
+
+            def ws_send(payload):
+                data = payload.encode() if isinstance(payload, str) else payload
+                frame = bytearray()
+                frame.append(0x81)  # text frame, FIN
+                mask_key = os.urandom(4)
+                length = len(data)
+                if length < 126:
+                    frame.append(0x80 | length)  # masked
+                elif length < 65536:
+                    frame.append(0x80 | 126)
+                    frame.extend(struct.pack('>H', length))
+                else:
+                    frame.append(0x80 | 127)
+                    frame.extend(struct.pack('>Q', length))
+                frame.extend(mask_key)
+                masked = bytearray(b ^ mask_key[i % 4] for i, b in enumerate(data))
+                frame.extend(masked)
+                s.sendall(frame)
+
+            def ws_recv():
+                # Read frame header
+                header = b''
+                while len(header) < 2:
+                    header += s.recv(2 - len(header))
+                opcode = header[0] & 0x0F
+                masked = (header[1] & 0x80) != 0
+                length = header[1] & 0x7F
+                if length == 126:
+                    ext = b''
+                    while len(ext) < 2:
+                        ext += s.recv(2 - len(ext))
+                    length = struct.unpack('>H', ext)[0]
+                elif length == 127:
+                    ext = b''
+                    while len(ext) < 8:
+                        ext += s.recv(8 - len(ext))
+                    length = struct.unpack('>Q', ext)[0]
+                if masked:
+                    mask_key = b''
+                    while len(mask_key) < 4:
+                        mask_key += s.recv(4 - len(mask_key))
+                payload = b''
+                while len(payload) < length:
+                    payload += s.recv(min(65536, length - len(payload)))
+                if masked:
+                    payload = bytearray(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+                if opcode == 0x08:  # close
+                    return None
+                if opcode == 0x09:  # ping
+                    pong = bytearray([0x8A, 0x80]) + os.urandom(4)
+                    s.sendall(pong)
+                    return ws_recv()
+                return payload.decode('utf-8', errors='replace')
+
+            # Request full data
+            ws_send(json.dumps({"type": "data"}))
+
+            # Read responses until we get the data message
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                msg = ws_recv()
+                if msg is None:
+                    break
+                try:
+                    parsed = json.loads(msg)
+                    if parsed.get('type') == 'data':
+                        return parsed.get('data', {})
+                except json.JSONDecodeError:
+                    continue
+        finally:
+            s.close()
+        return None
+
+    def _extract_squadding(self, sm_data):
+        """Extract competitor list from ShotMarker data object"""
+        users = sm_data.get('users', {})
+        squadding = sm_data.get('squadding', {})
+        matches = sm_data.get('matches', {})
+        classes = sm_data.get('classes', {})
+        frames = sm_data.get('frames', {})
+
+        if not users or not squadding:
+            return None
+
+        competitors = []
+        for key, squad in squadding.items():
+            parts = key.split(',')
+            if len(parts) != 2:
+                continue
+            if not isinstance(squad, dict):
+                squad = {}
+            user = users.get(parts[1], {})
+            if not isinstance(user, dict):
+                continue
+            name = user.get('name', '')
+            if not name or name == 'Unknown':
+                continue
+            match_info = matches.get(str(parts[0]), {})
+            if not isinstance(match_info, dict):
+                match_info = {}
+            cls_key = str(user.get('class', ''))
+            cls = classes.get(cls_key, {})
+            if not isinstance(cls, dict):
+                cls = {}
+            frame_key = str(squad.get('frame_id', ''))
+            frame = frames.get(frame_key, {})
+            if not isinstance(frame, dict):
+                frame = {}
+            competitors.append({
+                'name': name,
+                'class': cls.get('name', '') or cls_key,
+                'relay': str(squad.get('relay', '')),
+                'target': frame.get('name', '') or frame_key,
+                'match': match_info.get('name', ''),
+                'position': str(squad.get('position', '')),
+            })
+
+        return competitors if competitors else None
 
     def push_squadding(self):
         if self.busy:
-            return
-
-        competitors = self.received_squadding
-        if not competitors:
-            self.log('[ERROR] No squadding data — use the bookmarklet on the ShotMarker page first')
             return
 
         self.read_gui_to_config()
         self.busy = True
         self.set_buttons(False)
 
-        def _push():
+        def _do():
             try:
                 cfg = self.config
-                iface = cfg['wifi_interface']
+                sm_iface = cfg['sm_interface']
+                upload_iface = cfg['upload_interface']
+                sm_ip = cfg['shotmarker_ip']
                 upload_ssid = cfg['upload_ssid']
                 upload_pass = cfg['upload_password'] or None
                 cloud_url = cfg['cloud_url']
                 api_key = cfg['api_key']
+                sm_channels = cfg.get('sm_enabled', ['ShotMarker'])
+                dual = self.dual_adapter
 
                 comp_raw = cfg['competition']
                 competition = comp_raw.split(' \u2014 ')[0].strip() if ' \u2014 ' in comp_raw else comp_raw.strip()
@@ -912,20 +1274,53 @@ class ScraperApp:
                     self.log('[ERROR] No competition selected')
                     return
                 if not api_key:
-                    self.log('[ERROR] API key not set')
+                    self.log('[ERROR] API key not set — check Advanced Settings')
                     return
 
-                self.log(f'Pushing {len(competitors)} competitors for {competition}...')
+                # Phase 1: Connect to ShotMarker and fetch squadding
+                competitors = self.received_squadding
+                if not competitors:
+                    sm_ssid = sm_channels[0] if sm_channels else 'ShotMarker'
+                    self.log(f'Fetching squadding from {sm_ssid}...')
+                    self.set_status(f'Connecting to {sm_ssid}...')
 
-                # Switch to upload WiFi if needed
-                current = get_current_ssid()
-                if current != upload_ssid:
+                    if not wifi_connect(sm_ssid, sm_iface, self.log):
+                        self.log('[ERROR] Could not connect to ShotMarker')
+                        return
+                    time.sleep(2)
+
+                    self.set_status('Fetching squadding via WebSocket...')
+                    try:
+                        self.log('Connecting to ShotMarker WebSocket...')
+                        sm_data = self._fetch_sm_data_ws(sm_ip)
+                        if sm_data:
+                            self.log(f'Got data: {len(sm_data.get("users", {}))} users, {len(sm_data.get("squadding", {}))} squadding entries')
+                            competitors = self._extract_squadding(sm_data)
+                            if competitors:
+                                self.log(f'Found {len(competitors)} competitors in squadding')
+                            else:
+                                self.log('[ERROR] No squadding data found — is a competition with squadding loaded?')
+                                return
+                        else:
+                            self.log('[ERROR] Could not get data from ShotMarker WebSocket')
+                            return
+                    except Exception as e:
+                        self.log(f'[ERROR] Fetch squadding: {e}')
+                        return
+                else:
+                    self.log(f'Using {len(competitors)} competitors from bookmarklet')
+
+                # Phase 2: Connect to upload WiFi and push
+                if dual:
+                    self.log('Dual adapter — upload WiFi already connected')
+                else:
                     self.set_status(f'Switching to {upload_ssid}...')
-                    if not wifi_connect(upload_ssid, iface, self.log, password=upload_pass):
+                    if not wifi_connect(upload_ssid, upload_iface, self.log, password=upload_pass):
                         self.log('[ERROR] Could not connect to upload WiFi')
                         return
                     time.sleep(2)
 
+                self.log(f'Pushing {len(competitors)} competitors for {competition}...')
                 self.set_status('Pushing squadding...')
                 try:
                     resp = requests.post(
@@ -937,19 +1332,22 @@ class ScraperApp:
                     if resp.status_code in (200, 201):
                         msg = resp.json().get('message', 'OK')
                         self.log(f'Squadding pushed: {msg}')
+                        play_success_sound()
                         self.received_squadding = None
                         self.root.after(0, lambda: self.squad_btn.configure(text='Push Squadding'))
                     else:
                         self.log(f'[ERROR] HTTP {resp.status_code}: {resp.text[:200]}')
+                        play_fail_sound()
                 except Exception as e:
                     self.log(f'[ERROR] Push squadding: {e}')
+                    play_fail_sound()
 
             finally:
                 self.set_status('Ready')
                 self.busy = False
                 self.set_buttons(True)
 
-        threading.Thread(target=_push, daemon=True).start()
+        threading.Thread(target=_do, daemon=True).start()
 
     # ── Test Upload WiFi ──
 
@@ -962,7 +1360,7 @@ class ScraperApp:
 
         def _test():
             try:
-                iface = self.config['wifi_interface']
+                upload_iface = self.config['upload_interface']
                 upload_ssid = self.config['upload_ssid']
                 upload_pass = self.config['upload_password'] or None
 
@@ -972,7 +1370,7 @@ class ScraperApp:
 
                 self.log('\u2500\u2500 Upload WiFi Test \u2500\u2500')
                 self.set_status(f'Testing {upload_ssid}...')
-                ok = wifi_connect(upload_ssid, iface, self.log, password=upload_pass)
+                ok = wifi_connect(upload_ssid, upload_iface, self.log, password=upload_pass)
                 if ok:
                     self._update_indicator('upload', 'ok')
                     self.log(f'OK \u2014 connected to {upload_ssid}')
@@ -1005,10 +1403,12 @@ class ScraperApp:
 
         def _test():
             try:
-                iface = self.config['wifi_interface']
+                sm_iface = self.config['sm_interface']
+                upload_iface = self.config['upload_interface']
                 channels = self.config['sm_enabled']
                 upload_ssid = self.config['upload_ssid']
                 upload_pass = self.config['upload_password'] or None
+                dual = self.dual_adapter
 
                 if not channels:
                     self.log('[ERROR] No ShotMarker channels enabled')
@@ -1019,7 +1419,7 @@ class ScraperApp:
                 sm_any_ok = False
                 for ch in channels:
                     self.set_status(f'Testing {ch}...')
-                    ok = wifi_connect(ch, iface, self.log)
+                    ok = wifi_connect(ch, sm_iface, self.log)
                     if ok:
                         sm_any_ok = True
                         self.log(f'OK \u2014 {ch} reachable')
@@ -1034,9 +1434,9 @@ class ScraperApp:
                     time.sleep(1)
                 self._update_indicator('sm', 'ok' if sm_any_ok else 'fail')
 
-                if upload_ssid:
+                if upload_ssid and not dual:
                     self.set_status(f'Reconnecting to {upload_ssid}...')
-                    wifi_connect(upload_ssid, iface, self.log, password=upload_pass)
+                    wifi_connect(upload_ssid, upload_iface, self.log, password=upload_pass)
 
                 self.log('\u2500\u2500 Test complete \u2500\u2500')
             finally:
@@ -1058,7 +1458,8 @@ class ScraperApp:
 
     def _do_scrape(self):
         cfg = self.config
-        iface = cfg['wifi_interface']
+        sm_iface = cfg['sm_interface']
+        upload_iface = cfg['upload_interface']
         channels = cfg['sm_enabled']
         sm_ip = cfg['shotmarker_ip']
         upload_ssid = cfg['upload_ssid']
@@ -1066,6 +1467,7 @@ class ScraperApp:
         mode = cfg['mode']
         cloud_url = cfg['cloud_url']
         api_key = cfg['api_key']
+        dual = self.dual_adapter
 
         comp_raw = cfg['competition']
         competition = comp_raw.split(' \u2014 ')[0].strip() if ' \u2014 ' in comp_raw else comp_raw.strip()
@@ -1094,7 +1496,7 @@ class ScraperApp:
                 self.set_status(f'Connecting to {sm_ssid}...')
                 self.log(f'{ch_label}: connecting...')
 
-                if not wifi_connect(sm_ssid, iface, self.log):
+                if not wifi_connect(sm_ssid, sm_iface, self.log):
                     self.log(f'{ch_label}: SKIPPED \u2014 could not connect')
                     self._update_indicator('sm', 'fail')
                     continue
@@ -1120,12 +1522,21 @@ class ScraperApp:
                     resp = requests.get(f'http://{sm_ip}/export_csv?days=1', timeout=15)
                     if resp.status_code == 200 and resp.text.strip():
                         csv_text = resp.text
-                        lines = csv_text.strip().split('\n')
-                        self.log(f'{ch_label}: got {len(lines)} CSV lines')
-                        if all_shotlog and lines:
-                            all_shotlog += '\n' + '\n'.join(lines[1:])
-                        else:
-                            all_shotlog = csv_text
+                        if csv_text.strip().startswith('<!DOCTYPE') or '<html' in csv_text[:200].lower():
+                            self.log(f'{ch_label}: [WARN] Got HTML instead of CSV — ShotMarker may be in competition mode, retrying...')
+                            time.sleep(2)
+                            resp = requests.get(f'http://{sm_ip}/export_csv?days=1', timeout=15)
+                            csv_text = resp.text if resp.status_code == 200 else ''
+                        if csv_text.strip().startswith('<!DOCTYPE') or '<html' in csv_text[:200].lower():
+                            self.log(f'{ch_label}: [ERROR] ShotMarker returned HTML instead of CSV — skipping shotlog')
+                            csv_text = ''
+                        if csv_text.strip():
+                            lines = csv_text.strip().split('\n')
+                            self.log(f'{ch_label}: got {len(lines)} CSV lines')
+                            if all_shotlog and lines:
+                                all_shotlog += '\n' + '\n'.join(lines[1:])
+                            else:
+                                all_shotlog = csv_text
                     else:
                         self.log(f'{ch_label}: no shotlog data')
                 except Exception as e:
@@ -1153,20 +1564,23 @@ class ScraperApp:
                 competition
             )
 
-            self.set_status(f'Switching to {upload_ssid}...')
-            if not wifi_connect(upload_ssid, iface, self.log, password=upload_pass):
-                self.log(f'[ERROR] Could not connect to {upload_ssid}.')
-                self._update_indicator('upload', 'fail')
-                # Queue everything for retry
-                if has_scores and competition:
-                    self._queue_push('scores', all_scores, competition)
-                if has_shotlog:
-                    self._queue_push('shotlog', all_shotlog, competition)
-                threading.Thread(target=play_fail_sound, daemon=True).start()
-                return
+            if dual:
+                self.log('Dual adapter \u2014 upload WiFi already connected')
+            else:
+                self.set_status(f'Switching to {upload_ssid}...')
+                if not wifi_connect(upload_ssid, upload_iface, self.log, password=upload_pass):
+                    self.log(f'[ERROR] Could not connect to {upload_ssid}.')
+                    self._update_indicator('upload', 'fail')
+                    # Queue everything for retry
+                    if has_scores and competition:
+                        self._queue_push('scores', all_scores, competition)
+                    if has_shotlog:
+                        self._queue_push('shotlog', all_shotlog, competition)
+                    threading.Thread(target=play_fail_sound, daemon=True).start()
+                    return
+                time.sleep(2)
 
             self._update_indicator('upload', 'ok')
-            time.sleep(2)
 
             self.set_status('Checking internet...')
             try:
@@ -1247,9 +1661,9 @@ class ScraperApp:
             threading.Thread(target=play_fail_sound, daemon=True).start()
 
         finally:
-            if upload_ssid and get_current_ssid() != upload_ssid:
+            if not dual and upload_ssid and get_current_ssid(upload_iface) != upload_ssid:
                 self.log(f'Reconnecting to {upload_ssid}...')
-                wifi_connect(upload_ssid, iface, self.log, password=upload_pass)
+                wifi_connect(upload_ssid, upload_iface, self.log, password=upload_pass)
             self.set_status('Ready')
             self.busy = False
             self.set_buttons(True)
@@ -1301,7 +1715,7 @@ class ScraperApp:
         """Connect to upload WiFi if needed, then check for updates."""
         self.read_gui_to_config()
         cfg = self.config
-        iface = cfg['wifi_interface']
+        upload_iface = cfg['upload_interface']
         upload_ssid = cfg['upload_ssid']
         upload_pass = cfg['upload_password'] or None
         repo = cfg.get('github_repo', 'tghaines/smscores')
@@ -1310,11 +1724,11 @@ class ScraperApp:
         token = cfg.get('github_token', '') or None
 
         # Connect to upload WiFi if not already on it
-        current = get_current_ssid()
+        current = get_current_ssid(upload_iface)
         if upload_ssid and current != upload_ssid:
             if not silent:
                 self.log(f'Connecting to {upload_ssid} for update check...')
-            if not wifi_connect(upload_ssid, iface, self.log, password=upload_pass):
+            if not wifi_connect(upload_ssid, upload_iface, self.log, password=upload_pass):
                 if not silent:
                     self.log('[ERROR] Could not connect to upload WiFi for update check')
                 return

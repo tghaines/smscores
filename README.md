@@ -1,136 +1,129 @@
-# SMScores
+# ScoreScraper
 
-Live scoring system for competitive shooting events. Scrapes data from ShotMarker electronic targets via a Raspberry Pi, pushes it to a cloud server, and displays live scoreboards to the public.
+Grabs scores from ShotMarker targets and puts them on the website automatically.
 
-Built for the Coastal Cup but designed to support multiple competitions and ranges.
+---
 
-## How It Works
+## Getting Started
+
+Someone gave you a file called **ScoreScraper.exe** (on a USB stick, email, whatever). Here's what to do.
+
+### Step 1: Copy it to your laptop
+
+Copy `ScoreScraper.exe` to your Desktop (or anywhere you like). There's nothing to install.
+
+### Step 2: Run it
+
+Double-click `ScoreScraper.exe`.
+
+**You will see a blue warning screen** that says "Windows protected your PC". This is normal -- Windows shows this for any app it hasn't seen before. It's safe.
+
+To get past it:
+1. Click **"More info"** (small text under the warning message)
+2. Click **"Run anyway"**
+
+The ScoreScraper window will open.
+
+### Step 3: Enter your API key
+
+Your range admin will give you an API key -- it's a long string of letters and numbers that tells the system which range you are.
+
+1. At the bottom of the window, click **Advanced Settings**
+2. Find the **API Key** box
+3. Paste in the key your admin gave you
+4. Click **Validate** -- you should see your range name appear
+5. Click **Advanced Settings** again to close that section
+
+### Step 4: Set up your WiFi
+
+You need two WiFi connections:
+- One to talk to the **ShotMarker** targets on the range
+- One for the **internet** to upload scores to the website
+
+#### ShotMarker (top section)
+
+1. **Adapter** -- click the dropdown and pick your WiFi adapter. If you have a USB WiFi dongle plugged in, you'll see two adapters listed with their real names (e.g. "Wi-Fi -- Intel..." and "Wi-Fi 2 -- Realtek..."). Pick whichever one you want to use for ShotMarker.
+2. **Channels** -- tick **ShotMarker** (this is the WiFi network name the ShotMarker creates). Leave the others unticked unless you know you need them.
+
+#### Upload WiFi (second section)
+
+1. **Adapter** -- pick the WiFi adapter for your internet connection. If you only have one adapter, pick the same one as above (the app will switch between networks automatically, just a bit slower).
+2. Click **Scan** to find nearby WiFi networks
+3. **SSID** -- pick your internet WiFi network from the dropdown
+4. **Password** -- type the WiFi password. If your laptop already connects to this network automatically, leave the password blank.
+
+#### One adapter or two?
+
+- **One adapter** (most laptops): Set both adapters to the same one. The app will connect to ShotMarker, grab the scores, disconnect, connect to internet, upload, then switch back. Works fine, just takes about 10 seconds to switch each time.
+- **Two adapters** (laptop + USB WiFi dongle): Set each adapter to a different one. Both stay connected all the time. Much faster, no switching delays.
+
+### Step 5: Pick your range and competition
+
+1. Click **Fetch** to load the list of ranges
+2. Pick your **Range** from the dropdown
+3. Choose what you're doing:
+   - **Competition** -- pick the competition from the dropdown. Scores and squadding go to the competition's live scoreboard page.
+   - **Club day only** -- for regular club practice. No competition needed. Shotlog data goes to the club's range page.
+
+### Step 6: Go!
+
+- Click **Scrape Once** to grab scores and upload them one time
+- Click **Start Auto** to keep scraping automatically (every 30 seconds by default)
+
+Watch the log at the bottom of the window -- it tells you everything that's happening.
+
+---
+
+## Pushing Squadding
+
+If your competition has squadding (who's shooting where) set up on the ShotMarker:
+
+1. Make sure the ShotMarker is powered on and the competition is loaded on it
+2. Click **Push Squadding**
+3. Done -- the app connects to the ShotMarker, grabs the squadding, and uploads it
+
+---
+
+## Updating
+
+When a new version comes out, your range admin will send you a new `ScoreScraper.exe`. Just delete the old one and use the new one. Your settings are saved separately so you won't lose them.
+
+---
+
+## Troubleshooting
+
+**The blue "Windows protected your PC" screen won't go away**
+Make sure you click "More info" first. The "Run anyway" button only appears after you click that.
+
+**WiFi won't connect to ShotMarker**
+- Is the ShotMarker powered on?
+- Are you close enough? ShotMarker WiFi range is limited.
+- Did you pick the right adapter in the dropdown?
+- Click the little refresh button next to the adapter dropdown and try again.
+
+**"No profile assigned to the specified interface"**
+This happens the first time you use a new WiFi adapter. The app creates the WiFi profile automatically -- just try again and it should work.
+
+**Scores say "unchanged"**
+That's normal. It means nobody has fired any new shots since the last scrape. The app only uploads when something has changed.
+
+**"Could not connect to upload WiFi"**
+- Check your upload WiFi SSID is correct (click Scan to refresh the list)
+- Check the password is right
+- Try the **Test Upload** button to test the connection
+
+**Nothing seems to happen when I click Scrape**
+Check the log at the bottom of the window. It shows exactly what's happening and any errors.
+
+---
+
+## For Developers
+
+Source code: `win_scraper_gui.py`. To run from source:
 
 ```
-ShotMarker Targets ──WiFi──> Raspberry Pi ──HTTP API──> Cloud Server ──> Public Scoreboards
+pip install requests
+python win_scraper_gui.py
 ```
 
-1. **ShotMarker targets** record shots electronically on the range
-2. **Raspberry Pi** (ScoreScraper) connects to ShotMarker WiFi networks, scrapes score data, then switches to an uplink network to push data to the cloud
-3. **Cloud server** (Flask + PostgreSQL) stores scores and serves the web app
-4. **Public scoreboards** auto-refresh every 15 seconds with live results, rankings, and shot-by-shot detail
-
-## Architecture
-
-### Cloud Server (`app.py`)
-- Flask web app (~5000 lines, single file)
-- PostgreSQL database via SQLAlchemy
-- Serves: public scoreboards, photo galleries, event guides, admin panel
-- Receives score data via API from the Pi scraper
-- Runs on DigitalOcean with Gunicorn + systemd
-
-### Raspberry Pi Scraper
-- **`multi_scraper_v2.py`** — Cycles through ShotMarker WiFi networks, scrapes scores and shotlog CSVs, pushes to cloud
-- **`scraper_web_v3.py`** — Local web UI (port 8080) for configuring the scraper (WiFi channels, destination range/competition, manual triggers)
-- Dual USB WiFi adapters: one for AP (config access), one for scraping + uplink
-- Runs as systemd services
-
-## Key Files
-
-| File | What it does |
-|------|-------------|
-| `app.py` | Cloud server — the main application |
-| `multi_scraper_v2.py` | Pi data scraper |
-| `scraper_web_v3.py` | Pi configuration web UI |
-| `backup.sh` | Database + app backup script (runs on server) |
-| `TODO.md` | Feature tracking |
-| `CLONE_GUIDE.md` | Pi SD card cloning instructions |
-
-## Database Models
-
-- **Range** — A shooting range/club (e.g. "ANZAC")
-- **Competition** — A live event with its own scoreboard and URL slug
-- **Score** — JSON snapshot of all competitor scores (pushed from ShotMarker)
-- **Competitor** — Squadding entry (name, class, relay, target, match)
-- **Shotlog** — Daily club shooting record
-- **ShotlogString** — Individual string within a shotlog (shots, scores, X count)
-- **Photo** — Competition photo gallery images
-
-## Local Development
-
-### Prerequisites
-- Python 3.10+
-- PostgreSQL
-
-### Setup
-```bash
-# Clone the repo
-git clone https://github.com/YOUR_USERNAME/smscores.git
-cd smscores
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Create database
-createdb smscores
-# Or via psql: CREATE DATABASE smscores;
-
-# Run
-python app.py
-# App runs at http://localhost:5000
-```
-
-### Database Connection
-The app expects PostgreSQL at `localhost` with database `smscores`. Update the connection string in `app.py` if your setup differs.
-
-## Admin Access
-
-Navigate to `/admin` and log in. The admin panel provides:
-- Competition management (create, rename, archive, delete)
-- Shooter/squadding management
-- Score editing
-- Photo gallery management
-- Sponsor logos
-- Competition settings (logo, guide, contact info)
-- CSV export of results
-
-## Public URLs
-
-Each competition gets its own set of URLs:
-- `/<route>` — Live scoreboard
-- `/<route>/squadding` — Competitor list
-- `/<route>/guide` — Event guide
-- `/<route>/contact` — Contact information
-- `/<route>/photos` — Photo gallery
-
-Range/club days:
-- `/range/<range_id>` — Club shooting history
-- `/range/<range_id>/<date>` — Specific day's scores
-
-## API Endpoints
-
-Data push (from Pi scraper, requires API key):
-- `POST /api/push/scores` — Push competition scores
-- `POST /api/push/competitors` — Push squadding data
-- `POST /api/push/shotlog` — Push club shooting CSV
-
-## Deployment
-
-### Cloud Server
-- Located at `/opt/smscores/` on the server
-- Service: `smscores` (systemd)
-- Behind Gunicorn with 2 workers on port 5000
-- Daily backup via cron (`backup.sh`)
-
-### Raspberry Pi
-- Located at `/opt/scraper/` on the Pi
-- Services: `scraper_web.service`, `multi_scraper.service`
-- AP network: "scraper" (open, 10.42.0.1:8080)
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## License
-
-Private repository. Contact the maintainer for access.
+To build the exe: run `build.bat` (requires Python).

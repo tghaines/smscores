@@ -4938,8 +4938,10 @@ th { color:var(--gold); font-family:"Oswald",sans-serif; }
       <tr>
         <td>{{ r.id }}</td>
         <td>{{ r.name }}</td>
-        <td class="api-key">{{ r.api_key }}</td>
-        <td>
+        <td class="api-key" id="key-{{ r.id }}">{{ r.api_key }}</td>
+        <td style="white-space:nowrap;">
+          <button class="btn btn-primary btn-small" onclick="copyKey('{{ r.id }}')" title="Copy API key">Copy</button>
+          <button class="btn btn-small" style="background:var(--gold);color:var(--bg);" onclick="confirmRegen('{{ r.id }}', '{{ r.name }}')" title="Generate new API key">Regenerate</button>
           <button class="btn btn-danger btn-small" onclick="confirmDelete('range', '{{ r.id }}', '{{ r.name }}')">Delete</button>
         </td>
       </tr>
@@ -4977,13 +4979,13 @@ th { color:var(--gold); font-family:"Oswald",sans-serif; }
   </div>
 </div>
 
-<!-- Delete Confirmation Modal -->
+<!-- Confirmation Modal -->
 <div class="confirm-delete" id="confirmModal">
   <div class="confirm-box">
-    <p>Are you sure you want to delete <strong id="deleteName"></strong>?</p>
-    <p style="color:var(--red); font-size:0.9rem;">This cannot be undone!</p>
-    <form method="POST" id="deleteForm">
-      <button type="submit" class="btn btn-danger">Yes, Delete</button>
+    <p id="confirmText"></p>
+    <p id="confirmWarning" style="font-size:0.9rem;"></p>
+    <form method="POST" id="confirmForm">
+      <button type="submit" class="btn btn-danger" id="confirmBtn">Confirm</button>
       <button type="button" class="btn btn-primary" onclick="closeModal()">Cancel</button>
     </form>
   </div>
@@ -4991,9 +4993,28 @@ th { color:var(--gold); font-family:"Oswald",sans-serif; }
 
 <script>
 function confirmDelete(type, id, name) {
-  document.getElementById('deleteName').textContent = name;
-  document.getElementById('deleteForm').action = '/admin/manage/' + type + '/delete/' + id;
+  document.getElementById('confirmText').innerHTML = 'Are you sure you want to delete <strong>' + name + '</strong>?';
+  document.getElementById('confirmWarning').textContent = 'This cannot be undone!';
+  document.getElementById('confirmWarning').style.color = 'var(--red)';
+  document.getElementById('confirmBtn').textContent = 'Yes, Delete';
+  document.getElementById('confirmBtn').className = 'btn btn-danger';
+  document.getElementById('confirmForm').action = '/admin/manage/' + type + '/delete/' + id;
   document.getElementById('confirmModal').style.display = 'flex';
+}
+function confirmRegen(id, name) {
+  document.getElementById('confirmText').innerHTML = 'Regenerate API key for <strong>' + name + '</strong>?';
+  document.getElementById('confirmWarning').textContent = 'The old key will stop working immediately. Update all scrapers with the new key.';
+  document.getElementById('confirmWarning').style.color = 'var(--gold)';
+  document.getElementById('confirmBtn').textContent = 'Yes, Regenerate';
+  document.getElementById('confirmBtn').className = 'btn btn-primary';
+  document.getElementById('confirmForm').action = '/admin/manage/range/regenerate/' + id;
+  document.getElementById('confirmModal').style.display = 'flex';
+}
+function copyKey(rangeId) {
+  var keyText = document.getElementById('key-' + rangeId).textContent;
+  navigator.clipboard.writeText(keyText).then(function() {
+    alert('API key copied to clipboard');
+  });
 }
 function closeModal() {
   document.getElementById('confirmModal').style.display = 'none';
@@ -5046,11 +5067,23 @@ def admin_create_range():
     log_activity(f'Range created: {range_name} ({range_id})', 'info')
     return redirect(f'/admin/manage?msg=Range {range_name} created successfully&type=success')
 
+@app.route('/admin/manage/range/regenerate/<range_id>', methods=['POST'])
+def admin_regenerate_key(range_id):
+    if not session.get('admin'):
+        return redirect('/admin')
+    range_obj = Range.query.get(range_id)
+    if not range_obj:
+        return redirect('/admin/manage?msg=Range not found&type=error')
+    range_obj.api_key = secrets.token_hex(32)
+    db.session.commit()
+    log_activity(f'API key regenerated for {range_obj.name} ({range_id})', 'warn')
+    return redirect(f'/admin/manage?msg=API key regenerated for {range_obj.name}. Update all scrapers with the new key.&type=success')
+
 @app.route('/admin/manage/range/delete/<range_id>', methods=['POST'])
 def admin_delete_range(range_id):
     if not session.get('admin'):
         return redirect('/admin')
-    
+
     range_obj = Range.query.get(range_id)
     if not range_obj:
         return redirect('/admin/manage?msg=Range not found&type=error')
@@ -5158,5 +5191,34 @@ def api_destinations():
     
     return jsonify({
         'ranges': ranges,
+        'competitions': competitions
+    })
+
+# ══════════════════════════════════════════════
+#  API - Validate API Key
+# ══════════════════════════════════════════════
+
+@app.route('/api/validate-key')
+def api_validate_key():
+    """Validate an API key and return the range info + competitions"""
+    api_key = request.headers.get('X-API-Key')
+    if not api_key:
+        return jsonify({'error': 'Missing API key'}), 401
+    range_obj = Range.query.filter_by(api_key=api_key).first()
+    if not range_obj:
+        return jsonify({'error': 'Invalid API key'}), 401
+
+    competitions = []
+    for c in Competition.query.filter_by(range_id=range_obj.id).all():
+        if c.active:
+            competitions.append({
+                'id': c.id,
+                'route': c.route,
+                'name': c.name
+            })
+
+    return jsonify({
+        'range_id': range_obj.id,
+        'range_name': range_obj.name,
         'competitions': competitions
     })
